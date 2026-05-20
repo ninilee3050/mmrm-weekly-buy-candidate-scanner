@@ -5,6 +5,7 @@ import pandas as pd
 from data_provider import (
     _chart_payload_to_dataframe,
     _drop_incomplete_current_week,
+    _read_local_csv,
     _resample_daily_to_weekly,
 )
 
@@ -82,3 +83,53 @@ def test_resample_daily_to_weekly_uses_monday_label_and_weekly_ohlcv() -> None:
     assert row["Low"] == 84.08
     assert row["Close"] == 87.37
     assert row["Volume"] == 150
+
+
+def test_resample_daily_to_weekly_can_keep_current_week(monkeypatch) -> None:
+    class FixedTimestamp(pd.Timestamp):
+        @classmethod
+        def today(cls, tz=None):
+            return cls("2026-05-20")
+
+    monkeypatch.setattr(pd, "Timestamp", FixedTimestamp)
+    daily = pd.DataFrame(
+        {
+            "Open": [10.0, 11.0],
+            "High": [12.0, 13.0],
+            "Low": [9.0, 10.0],
+            "Close": [11.0, 12.0],
+            "Volume": [100, 200],
+        },
+        index=pd.to_datetime(["2026-05-18", "2026-05-19"]),
+    )
+
+    result = _resample_daily_to_weekly(daily, include_current_week=True)
+
+    assert result.index.strftime("%Y-%m-%d").tolist() == ["2026-05-18"]
+    assert result.iloc[0]["Close"] == 12.0
+
+
+def test_read_local_csv_can_keep_or_drop_current_week(tmp_path, monkeypatch) -> None:
+    class FixedTimestamp(pd.Timestamp):
+        @classmethod
+        def today(cls, tz=None):
+            return cls("2026-05-20")
+
+    monkeypatch.setattr(pd, "Timestamp", FixedTimestamp)
+    csv_path = tmp_path / "TEST.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "Date,Open,High,Low,Close,Volume",
+                "2026-05-11,1,2,1,2,100",
+                "2026-05-18,2,3,2,3,200",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    dropped = _read_local_csv(csv_path)
+    kept = _read_local_csv(csv_path, include_current_week=True)
+
+    assert dropped.index.strftime("%Y-%m-%d").tolist() == ["2026-05-11"]
+    assert kept.index.strftime("%Y-%m-%d").tolist() == ["2026-05-11", "2026-05-18"]

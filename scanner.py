@@ -74,6 +74,26 @@ def scan_buy_points(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return buy_points, full
 
 
+def current_week_buy_point(
+    buy_points: pd.DataFrame,
+    scan_date: pd.Timestamp | str | None = None,
+) -> pd.Series | None:
+    week_start = _week_start(scan_date)
+    if buy_points.empty or week_start not in buy_points.index:
+        return None
+
+    row = buy_points.loc[week_start]
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[0]
+    return row
+
+
+def _week_start(scan_date: pd.Timestamp | str | None = None) -> pd.Timestamp:
+    date = pd.Timestamp.today() if scan_date is None else pd.Timestamp(scan_date)
+    normalized = date.normalize()
+    return normalized - pd.Timedelta(days=normalized.weekday())
+
+
 def _macd_area(macd: float) -> str:
     if pd.isna(macd):
         return ""

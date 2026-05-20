@@ -27,21 +27,26 @@ def normalize_ticker(ticker: str) -> str:
     return cleaned
 
 
-def load_weekly_data(ticker: str, data_dir: Path | str = DATA_DIR) -> pd.DataFrame:
+def load_weekly_data(
+    ticker: str,
+    data_dir: Path | str = DATA_DIR,
+    include_current_week: bool = False,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
     ticker = normalize_ticker(ticker)
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = data_dir / f"{ticker}.csv"
-    if csv_path.exists():
+    if csv_path.exists() and not force_refresh:
         try:
-            cached = _read_local_csv(csv_path)
+            cached = _read_local_csv(csv_path, include_current_week=include_current_week)
             if _is_monday_labeled_weekly(cached):
                 return cached
         except Exception:
             pass
 
-    data = _download_weekly_from_yahoo(ticker)
+    data = _download_weekly_from_yahoo(ticker, include_current_week=include_current_week)
     if data.empty:
         raise DataLoadError(f"{ticker} 데이터가 비어 있습니다. 티커를 다시 확인해 주세요.")
 
@@ -49,26 +54,36 @@ def load_weekly_data(ticker: str, data_dir: Path | str = DATA_DIR) -> pd.DataFra
     return data
 
 
-def _read_local_csv(path: Path) -> pd.DataFrame:
+def _read_local_csv(path: Path, include_current_week: bool = False) -> pd.DataFrame:
     raw = pd.read_csv(path)
-    return _drop_incomplete_current_week(_normalize_ohlcv_dataframe(raw))
+    data = _normalize_ohlcv_dataframe(raw)
+    if include_current_week:
+        return data
+    return _drop_incomplete_current_week(data)
 
 
-def _download_weekly_from_yahoo(ticker: str) -> pd.DataFrame:
+def _download_weekly_from_yahoo(ticker: str, include_current_week: bool = False) -> pd.DataFrame:
     errors = []
 
     try:
-        return _download_daily_then_resample_from_yahoo(ticker)
+        return _download_daily_then_resample_from_yahoo(
+            ticker,
+            include_current_week=include_current_week,
+        )
     except Exception as exc:  # pragma: no cover - depends on network.
         errors.append(f"Yahoo daily chart API: {exc}")
 
     try:
-        return _download_from_yahoo_chart(ticker, interval="1wk")
+        return _download_from_yahoo_chart(
+            ticker,
+            interval="1wk",
+            include_current_week=include_current_week,
+        )
     except Exception as exc:  # pragma: no cover - depends on network.
         errors.append(f"Yahoo weekly chart API: {exc}")
 
     try:
-        return _download_with_yfinance(ticker)
+        return _download_with_yfinance(ticker, include_current_week=include_current_week)
     except Exception as exc:  # pragma: no cover - depends on optional package/network.
         errors.append(f"yfinance: {exc}")
 
@@ -79,7 +94,7 @@ def _download_weekly_from_yahoo(ticker: str) -> pd.DataFrame:
     )
 
 
-def _download_with_yfinance(ticker: str) -> pd.DataFrame:
+def _download_with_yfinance(ticker: str, include_current_week: bool = False) -> pd.DataFrame:
     try:
         import yfinance as yf
     except ImportError as exc:  # pragma: no cover - depends on environment.
@@ -98,15 +113,26 @@ def _download_with_yfinance(ticker: str) -> pd.DataFrame:
     data = _normalize_ohlcv_dataframe(raw.reset_index())
     if data.empty:
         raise DataLoadError("yfinance에서 빈 데이터가 반환되었습니다.")
-    return _resample_daily_to_weekly(data)
+    return _resample_daily_to_weekly(data, include_current_week=include_current_week)
 
 
-def _download_daily_then_resample_from_yahoo(ticker: str) -> pd.DataFrame:
-    daily = _download_from_yahoo_chart(ticker, interval="1d")
-    return _resample_daily_to_weekly(daily)
+def _download_daily_then_resample_from_yahoo(
+    ticker: str,
+    include_current_week: bool = False,
+) -> pd.DataFrame:
+    daily = _download_from_yahoo_chart(
+        ticker,
+        interval="1d",
+        include_current_week=include_current_week,
+    )
+    return _resample_daily_to_weekly(daily, include_current_week=include_current_week)
 
 
-def _download_from_yahoo_chart(ticker: str, interval: str) -> pd.DataFrame:
+def _download_from_yahoo_chart(
+    ticker: str,
+    interval: str,
+    include_current_week: bool = False,
+) -> pd.DataFrame:
     period2 = int(time.time())
     query = (
         f"?period1=0&period2={period2}"
@@ -136,6 +162,8 @@ def _download_from_yahoo_chart(ticker: str, interval: str) -> pd.DataFrame:
     data = _chart_payload_to_dataframe(payload)
     if data.empty:
         raise DataLoadError("Yahoo chart API에서 빈 데이터가 반환되었습니다.")
+    if include_current_week:
+        return data
     return _drop_incomplete_current_week(data)
 
 
@@ -219,7 +247,10 @@ def _drop_incomplete_current_week(data: pd.DataFrame) -> pd.DataFrame:
     return data[row_week_starts < current_week_start]
 
 
-def _resample_daily_to_weekly(daily: pd.DataFrame) -> pd.DataFrame:
+def _resample_daily_to_weekly(
+    daily: pd.DataFrame,
+    include_current_week: bool = False,
+) -> pd.DataFrame:
     if daily.empty:
         return daily
 
@@ -240,6 +271,8 @@ def _resample_daily_to_weekly(daily: pd.DataFrame) -> pd.DataFrame:
     weekly.index = pd.to_datetime(weekly.index)
     weekly.index.name = "Date"
     weekly = weekly.dropna(subset=REQUIRED_COLUMNS)
+    if include_current_week:
+        return weekly
     return _drop_incomplete_current_week(weekly)
 
 
