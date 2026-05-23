@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from indicators import calculate_macd
 from scanner import add_signal_columns, current_week_buy_point, scan_buy_points
 
 
@@ -125,3 +126,15 @@ def test_current_week_buy_point_ignores_previous_week_candidate() -> None:
     result = current_week_buy_point(buy_points, scan_date="2026-05-20")
 
     assert result is None
+
+
+def test_macd_signal_uses_simple_average_to_match_investing() -> None:
+    close = pd.Series([100 + i + ((i % 5) * 2) for i in range(60)], dtype="float64")
+
+    macd, signal, histogram = calculate_macd(close)
+    expected_signal = macd.rolling(9, min_periods=9).mean()
+    legacy_ema_signal = macd.ewm(span=9, adjust=False, min_periods=9).mean()
+
+    assert signal.equals(expected_signal)
+    assert not signal.equals(legacy_ema_signal)
+    assert histogram.equals(macd - signal)

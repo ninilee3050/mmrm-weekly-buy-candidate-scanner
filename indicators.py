@@ -43,7 +43,7 @@ def calculate_macd(
     fast_ema = close.ewm(span=fast, adjust=False, min_periods=fast).mean()
     slow_ema = close.ewm(span=slow, adjust=False, min_periods=slow).mean()
     macd = fast_ema - slow_ema
-    signal_line = macd.ewm(span=signal, adjust=False, min_periods=signal).mean()
+    signal_line = macd.rolling(signal, min_periods=signal).mean()
     histogram = macd - signal_line
     return macd, signal_line, histogram
 

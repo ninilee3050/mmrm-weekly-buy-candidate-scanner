@@ -209,7 +209,7 @@ CSV는 Excel에서 한글이 잘 보이도록 `utf-8-sig`로 저장합니다.
 ## 지표 계산
 
 - Momentum: `Close - Close.shift(14)`
-- MACD: Close 기준 EMA 12, EMA 26, Signal 9
+- MACD: Close 기준 EMA 12, EMA 26, Signal SMA 9
 - RSI: 14기간 Wilder 방식
 - MFI: 14기간 Typical Price와 거래량 기준
 
