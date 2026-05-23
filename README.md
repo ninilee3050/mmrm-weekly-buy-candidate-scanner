@@ -24,6 +24,16 @@
 python app.py
 ```
 
+### 화면 없이 자동 스캔 실행
+
+GitHub Actions 같은 자동실행 환경에서는 GUI 창을 띄우는 `app.py` 대신 `weekly_scan.py`를 사용합니다.
+
+```bash
+python weekly_scan.py
+```
+
+`weekly_scan.py`는 화면을 띄우지 않고 미국 시가총액 Top 100을 불러온 뒤, 이번 주 진행 중인 주봉 기준 매수후보를 스캔하고 결과 CSV를 `outputs/` 폴더에 저장합니다.
+
 ## 설치
 
 처음 한 번은 필요한 패키지를 설치해야 합니다.
@@ -132,6 +142,11 @@ Top 100 스캐너 결과는 `스캔 저장하기` 버튼을 눌렀을 때 사용
 - `Downloads/top100_scan_candidates_YYYY-MM-DD.csv`
 - `Downloads/top100_scan_failures_YYYY-MM-DD.csv`
 
+`weekly_scan.py`로 화면 없이 자동 스캔을 실행하면 아래 파일이 프로젝트 `outputs/` 폴더에 저장됩니다.
+
+- `outputs/weekly_scan_candidates_YYYY-MM-DD.csv`
+- `outputs/weekly_scan_failures_YYYY-MM-DD.csv`
+
 CSV는 Excel에서 한글이 잘 보이도록 `utf-8-sig`로 저장합니다.
 
 ## 기준 시나리오
@@ -198,7 +213,7 @@ CSV는 Excel에서 한글이 잘 보이도록 `utf-8-sig`로 저장합니다.
 - RSI: 14기간 Wilder 방식
 - MFI: 14기간 Typical Price와 거래량 기준
 
-모든 지표는 마감된 주봉 기준으로 계산합니다.
+개별 종목 검색의 지표는 마감된 주봉 기준으로 계산합니다. Top 100 스캐너와 `weekly_scan.py`는 이번 주 진행 중인 주봉까지 포함해 계산합니다.
 
 ## 파일 구조
 
@@ -208,6 +223,7 @@ data_provider.py    Yahoo 데이터 다운로드, 캐시, 일봉→주봉 재구
 indicators.py       Momentum, MACD, RSI, MFI 계산
 market_cap_provider.py 미국 시총 Top 100 실시간 조회와 HTML 표 파싱
 scanner.py          매수포인트 시나리오 판정
+weekly_scan.py      GUI 없이 실행하는 자동 Top 100 스캐너
 실행하기.bat        Windows 더블클릭 실행 파일
 README.md           프로젝트 설명과 인수인계 문서
 requirements.txt    필요한 Python 패키지 목록
@@ -265,8 +281,10 @@ pytest
 10. Top 100 스캐너는 이번 주 진행 중인 주봉까지 포함해 새 매수후보만 찾습니다.
 11. Top 100 스캐너는 각 종목 데이터를 매번 새로 다운로드하고 기존 CSV를 덮어씁니다.
 12. Top 100 스캐너 결과와 실패 종목은 `스캔 저장하기` 버튼을 눌렀을 때 사용자 다운로드 폴더에 날짜별 CSV로 저장합니다.
-13. 사용자가 “세이브포인트”라고 말하면 Git 커밋을 의미합니다.
-14. 사용자가 “푸시”라고 말하면 로컬 커밋을 GitHub에 업로드하는 것을 의미합니다.
+13. `weekly_scan.py`는 GitHub Actions 같은 자동실행 환경에서 쓰는 화면 없는 Top 100 스캐너입니다.
+14. `weekly_scan.py` 결과와 실패 종목은 프로젝트 `outputs/` 폴더에 날짜별 CSV로 저장합니다.
+15. 사용자가 “세이브포인트”라고 말하면 Git 커밋을 의미합니다.
+16. 사용자가 “푸시”라고 말하면 로컬 커밋을 GitHub에 업로드하는 것을 의미합니다.
 
 ## GitHub 메모
 
