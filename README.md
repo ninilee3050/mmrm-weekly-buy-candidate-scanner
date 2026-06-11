@@ -194,8 +194,8 @@ outputs/{TICKER}_full_table.csv
 Top 100 스캐너 결과는 `스캔 저장하기` 버튼을 눌렀을 때 사용자 다운로드 폴더에 아래 파일로 저장됩니다.
 
 ```text
-Downloads/top100_scan_candidates_YYYY-MM-DD.csv
-Downloads/top100_scan_failures_YYYY-MM-DD.csv
+Downloads/MMRM_Top100_scan_candidates_YYYY-MM-DD.csv
+Downloads/MMRM_Top100_scan_failures_YYYY-MM-DD.csv
 ```
 
 `weekly_scan.py`로 화면 없이 자동 스캔을 실행하면 아래 파일이 프로젝트 `outputs/` 폴더에 저장됩니다.

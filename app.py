@@ -46,7 +46,7 @@ SCAN_FAILURE_COLUMNS = ["순위", "티커", "회사명", "시가총액", "오류
 class BuyPointApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("주봉 매수포인트 검증")
+        self.title("MMRM 시나리오 주봉 매수 후보 스캐너")
         self.geometry("2520x820")
         self.minsize(1800, 680)
 
@@ -514,8 +514,8 @@ def save_top100_scan_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     date_text = scan_date.strftime("%Y-%m-%d")
-    candidate_path = output_dir / f"top100_scan_candidates_{date_text}.csv"
-    failure_path = output_dir / f"top100_scan_failures_{date_text}.csv"
+    candidate_path = output_dir / f"MMRM_Top100_scan_candidates_{date_text}.csv"
+    failure_path = output_dir / f"MMRM_Top100_scan_failures_{date_text}.csv"
 
     candidates.to_csv(candidate_path, index=False, encoding="utf-8-sig")
     failures.to_csv(failure_path, index=False, encoding="utf-8-sig")
