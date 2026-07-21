@@ -1,0 +1,100 @@
+{
+  "package_name": "MMRM_PATTERN_RESEARCH_FINAL",
+  "package_schema_version": "2.0",
+  "authority": "single_canonical_folder",
+  "generated_at": "2026-07-21T19:27:53+09:00",
+  "default_engine": "investing_proxy",
+  "sensitivity_engine": "kis_compatible",
+  "taxonomy_training_end": "2015-10-05",
+  "walk_forward_evaluation_start": "2015-10-12",
+  "validation_method": "anchored fixed taxonomy plus expanding-window matured-outcome probabilities",
+  "minimum_probability_sample": 30,
+  "decision_policy": {
+    "version": "user_goal_52w20_v1",
+    "primary_target": "close_return_52w_gte_20pct",
+    "default_probability_threshold": 0.4,
+    "required_pattern_distance_status": [
+      "central",
+      "typical",
+      "outer",
+      "borderline"
+    ],
+    "note": "The 40% line is an operating policy for consistent answers, not a statistically proven optimal threshold."
+  },
+  "ranking_weights": {
+    "close_20_at_52w_rank": 0.4,
+    "touch_20_within_52w_rank": 0.1,
+    "rise_8w_rank": 0.2,
+    "mae_52w_safety_rank": 0.3
+  },
+  "engines": {
+    "investing_proxy": {
+      "label": "원형 MMRM 근사판",
+      "file": "data/events_investing_proxy.csv",
+      "role": "공식 주 기준",
+      "event_count": 2813,
+      "evaluation_event_count": 841,
+      "model_assignment_count": 2801,
+      "model_assignment_mismatches": 0,
+      "model_max_distance_error": 4.440892098500626e-16
+    },
+    "kis_compatible": {
+      "label": "KIS 호환판",
+      "file": "data/events_kis_compatible.csv",
+      "role": "민감도 비교",
+      "event_count": 2806,
+      "evaluation_event_count": 834,
+      "model_assignment_count": 2789,
+      "model_assignment_mismatches": 0,
+      "model_max_distance_error": 4.440892098500626e-16
+    }
+  },
+  "pattern_model": {
+    "file": "model/pattern_model.json",
+    "inference_tool": "tools/pattern_classifier.py",
+    "feature_count_per_engine": 220,
+    "cluster_count_per_engine": 5,
+    "landmarks": "relative weeks -52,-48,...,0",
+    "model_role": "classify a new pre-candle 52-week path without refitting"
+  },
+  "official_ranked_pattern_count": 4,
+  "pattern_count": 5,
+  "files": {
+    "entrypoint": "README.md",
+    "knowledge_base": "MMRM_KNOWLEDGE_BASE.md",
+    "human_report": "MMRM_PATTERN_REPORT.html",
+    "session_prompt": "NEXT_SESSION_PROMPT.txt",
+    "official_metrics": "data/pattern_metrics.csv",
+    "walk_forward_predictions": "data/walk_forward_predictions.csv",
+    "period_stability": "data/walk_forward_period_metrics.csv",
+    "condition_metrics": "data/condition_metrics.csv",
+    "outcome_flow_metrics": "data/outcome_flow_metrics.csv",
+    "pattern_to_flow_metrics": "data/pattern_to_flow_metrics.csv",
+    "definitions": "data/pattern_definitions.csv",
+    "investing_events": "data/events_investing_proxy.csv",
+    "kis_events": "data/events_kis_compatible.csv",
+    "provider_comparison": "data/provider_comparison.csv",
+    "pattern_model": "model/pattern_model.json",
+    "classifier": "tools/pattern_classifier.py",
+    "rebuild_script": "tools/rebuild_final_package.py",
+    "validation_script": "tools/validate_final_package.py"
+  },
+  "event_detail_groups": [
+    "identity and pattern",
+    "OHLCV and candle anatomy",
+    "Momentum MACD RSI MFI",
+    "MA levels slopes and distances",
+    "pre-candle 13 26 52 week structure",
+    "prior ATH price date margin and required return",
+    "post-candle outcomes kept separate for research audit"
+  ],
+  "known_limitations": [
+    "Current Top100 survivorship bias",
+    "Repeated events from the same ticker are not fully independent",
+    "Investing proxy is not an exact official Investing.com historical feed",
+    "KIS compatible engine is calibrated rather than a full official KIS historical feed",
+    "No commissions, taxes, FX, slippage, or next-week execution price",
+    "TFMR reverse and user-drawn support breaks are warnings, not official probability inputs",
+    "Historical cohort probability is not an individual-stock guarantee"
+  ]
+}
