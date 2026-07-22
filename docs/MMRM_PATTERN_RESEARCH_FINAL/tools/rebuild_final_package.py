@@ -39,9 +39,9 @@ TARGETS = {
 
 PATTERN_ADVICE = {
     "long_ma_cluster_discount_recovery": {
-        "rank_note": "즉각성·방어력 우선형",
-        "action": "가장 먼저 확인한다. 150·200주선 지지가 유지되고 MACD 회복이 이어지는지 본다.",
-        "risk": "장기선 지지를 주봉 음봉 종가로 이탈하면 가설을 낮추고 재진입 신호를 기다린다.",
+        "rank_note": "즉각성·밀집저항 회복 우선형",
+        "action": "가장 먼저 확인한다. 가격이 장기선 아래라면 150·200주선을 상단 저항으로 보고 돌파·안착 가능성과 MACD 회복을 함께 본다.",
+        "risk": "장기선을 회복하기 전에는 지지대로 부르지 않는다. 밀집 저항에서 반복적으로 밀리거나 재하락하면 가설을 낮춘다.",
     },
     "long_ma_near_initial_rebound": {
         "rank_note": "1년 +20% 목표 우선형",
@@ -359,6 +359,430 @@ def definitions() -> pd.DataFrame:
     return pd.read_csv(DATA / "pattern_definitions.csv")
 
 
+def _pattern_prototypes() -> list[dict[str, object]]:
+    model = json.loads((ROOT / "model" / "pattern_model.json").read_text(encoding="utf-8"))
+    spec = model["engines"]["investing_proxy"]
+    columns = spec["feature_columns"]
+    robust_center = np.array(spec["robust_center"], dtype=float)
+    robust_scale = np.array(spec["robust_scale"], dtype=float)
+    feature_weight = np.array(spec["feature_weight"], dtype=float)
+    definition_by_pattern = definitions().set_index("pattern_id")
+    weeks = np.arange(-52, 1, 4, dtype=int)
+    prototypes: list[dict[str, object]] = []
+
+    for cluster_code, cluster in spec["clusters"].items():
+        weighted_center = np.array(cluster["center"], dtype=float)
+        standardized = np.divide(
+            weighted_center,
+            feature_weight,
+            out=np.zeros_like(weighted_center),
+            where=np.abs(feature_weight) > 1e-12,
+        )
+        raw_values = standardized * robust_scale + robust_center
+        raw = dict(zip(columns, raw_values))
+
+        def path(family: str, name: str) -> np.ndarray:
+            return np.array(
+                [raw[f"{family}::{name}::{int(week):+03d}"] for week in weeks],
+                dtype=float,
+            )
+
+        price = 100.0 + path("price", "close_path_pct")
+        moving_averages: dict[int, np.ndarray] = {}
+        for period in (5, 20, 50, 150, 200):
+            distance = path("moving_average", f"close_to_ma_{period}_pct")
+            moving_averages[period] = price / np.maximum(0.05, 1.0 + distance / 100.0)
+
+        pattern_id = cluster["pattern_id"]
+        definition = definition_by_pattern.loc[pattern_id]
+        prototypes.append(
+            {
+                "cluster_code": cluster_code,
+                "pattern_id": pattern_id,
+                "pattern_name": cluster["pattern_name"],
+                "chart_path": ROOT / str(definition["representative_chart"]),
+                "weeks": weeks,
+                "price": price,
+                "moving_averages": moving_averages,
+                "drawdown": path("price", "drawdown_path_pct"),
+                "metrics": {
+                    "이전 52주 수익": raw["structure::pre_52w_return_pct"],
+                    "최대낙폭": raw["structure::pre_52w_max_drawdown_pct"],
+                    "연환산 변동성": raw["structure::pre_52w_volatility_ann_pct"],
+                    "MA150 이격": raw["moving_average::close_to_ma_150_pct::+00"],
+                    "MA200 이격": raw["moving_average::close_to_ma_200_pct::+00"],
+                    "장기선 간격": raw["structure::ma_150_200_tightness_pct"],
+                    "ATH 안전마진": raw["structure::ath_safety_margin_pct"],
+                },
+            }
+        )
+    return prototypes
+
+
+def _svg_polyline(
+    values: np.ndarray,
+    x_values: np.ndarray,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    left: float,
+    right: float,
+    top: float,
+    bottom: float,
+) -> str:
+    points = []
+    for x_value, y_value in zip(x_values, values):
+        x = left + (float(x_value) - x_min) / (x_max - x_min) * (right - left)
+        y = bottom - (float(y_value) - y_min) / (y_max - y_min) * (bottom - top)
+        points.append(f"{x:.1f},{y:.1f}")
+    return " ".join(points)
+
+
+def _prototype_svg(
+    prototype: dict[str, object],
+    price_bounds: tuple[float, float],
+    drawdown_min: float,
+) -> str:
+    width, height = 1200, 710
+    left, right = 80.0, 1140.0
+    price_top, price_bottom = 100.0, 410.0
+    draw_top, draw_bottom = 470.0, 555.0
+    weeks = np.asarray(prototype["weeks"], dtype=float)
+    price = np.asarray(prototype["price"], dtype=float)
+    moving_averages = prototype["moving_averages"]
+    drawdown = np.asarray(prototype["drawdown"], dtype=float)
+    y_min, y_max = price_bounds
+
+    def x_pos(week: float) -> float:
+        return left + (week + 52.0) / 52.0 * (right - left)
+
+    def y_pos(value: float, top: float, bottom: float, low: float, high: float) -> float:
+        return bottom - (value - low) / (high - low) * (bottom - top)
+
+    def fmt(value: float) -> str:
+        return f"{value:+.1f}%"
+
+    colors = {5: "#168b4b", 20: "#13b8c8", 50: "#3156d9", 150: "#8b3f2b", 200: "#e05252"}
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img">',
+        f"<title>{html.escape(str(prototype['pattern_name']))} 고정 패턴 중심 프로토타입</title>",
+        "<rect width=\"1200\" height=\"710\" fill=\"#ffffff\"/>",
+        "<style>text{font-family:system-ui,-apple-system,'Noto Sans KR',sans-serif;fill:#172033}.title{font-size:22px;font-weight:800}.sub{font-size:13px;fill:#647085}.axis{font-size:11px;fill:#6b7280}.metric{font-size:12px;fill:#647085}.value{font-size:17px;font-weight:800;fill:#1d5fd1}.legend{font-size:11px;font-weight:700}</style>",
+        f'<text x="40" y="30" class="title">{html.escape(str(prototype["pattern_name"]))}</text>',
+        f'<text x="40" y="53" class="sub">고정 모델 {prototype["cluster_code"]} 중심 · 기준봉 이전 T-52~T0만 사용 · 기준봉 종가=100 · 다섯 이미지 동일 축</text>',
+    ]
+
+    legend = [("종가", "#111827", 4)] + [(f"MA{period}", colors[period], 2) for period in colors]
+    legend_x = 570
+    for label, color, stroke_width in legend:
+        lines.append(f'<line x1="{legend_x}" y1="69" x2="{legend_x + 24}" y2="69" stroke="{color}" stroke-width="{stroke_width}"/>')
+        lines.append(f'<text x="{legend_x + 30}" y="73" class="legend">{label}</text>')
+        legend_x += 92
+
+    price_ticks = np.linspace(y_min, y_max, 7)
+    for tick in price_ticks:
+        y = y_pos(float(tick), price_top, price_bottom, y_min, y_max)
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{right}" y2="{y:.1f}" stroke="#e6ebf2"/>')
+        lines.append(f'<text x="{left - 10}" y="{y + 4:.1f}" text-anchor="end" class="axis">{tick:.0f}</text>')
+    for week in (-52, -40, -28, -16, 0):
+        x = x_pos(float(week))
+        lines.append(f'<line x1="{x:.1f}" y1="{price_top}" x2="{x:.1f}" y2="{price_bottom}" stroke="#eef2f7"/>')
+        label = "T0 기준봉" if week == 0 else f"T{week}"
+        lines.append(f'<text x="{x:.1f}" y="{price_bottom + 19}" text-anchor="middle" class="axis">{label}</text>')
+
+    ma150_points = _svg_polyline(np.asarray(moving_averages[150]), weeks, -52, 0, y_min, y_max, left, right, price_top, price_bottom).split()
+    ma200_points = _svg_polyline(np.asarray(moving_averages[200]), weeks, -52, 0, y_min, y_max, left, right, price_top, price_bottom).split()
+    band_points = " ".join(ma150_points + list(reversed(ma200_points)))
+    lines.append(f'<polygon points="{band_points}" fill="#e05252" opacity="0.08"/>')
+    for period in (150, 200, 50, 20, 5):
+        points = _svg_polyline(np.asarray(moving_averages[period]), weeks, -52, 0, y_min, y_max, left, right, price_top, price_bottom)
+        lines.append(f'<polyline points="{points}" fill="none" stroke="{colors[period]}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+    price_points = _svg_polyline(price, weeks, -52, 0, y_min, y_max, left, right, price_top, price_bottom)
+    lines.append(f'<polyline points="{price_points}" fill="none" stroke="#111827" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>')
+    lines.append(f'<line x1="{right}" y1="{price_top - 8}" x2="{right}" y2="{price_bottom}" stroke="#1d5fd1" stroke-width="3" stroke-dasharray="7 5"/>')
+
+    lines.append(f'<text x="{left}" y="{draw_top - 12}" class="sub">기준봉 이전 누적고점 대비 낙폭 경로</text>')
+    for tick in np.linspace(drawdown_min, 0.0, 4):
+        y = y_pos(float(tick), draw_top, draw_bottom, drawdown_min, 0.0)
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{right}" y2="{y:.1f}" stroke="#edf1f6"/>')
+        lines.append(f'<text x="{left - 10}" y="{y + 4:.1f}" text-anchor="end" class="axis">{tick:.0f}%</text>')
+    draw_points = _svg_polyline(drawdown, weeks, -52, 0, drawdown_min, 0.0, left, right, draw_top, draw_bottom)
+    fill_points = f"{left:.1f},{draw_top:.1f} {draw_points} {right:.1f},{draw_top:.1f}"
+    lines.append(f'<polygon points="{fill_points}" fill="#e05252" opacity="0.16"/>')
+    lines.append(f'<polyline points="{draw_points}" fill="none" stroke="#c63f4a" stroke-width="3" stroke-linejoin="round"/>')
+
+    metrics = prototype["metrics"]
+    metric_items = [
+        ("이전 52주 수익", metrics["이전 52주 수익"]),
+        ("최대낙폭", metrics["최대낙폭"]),
+        ("연환산 변동성", metrics["연환산 변동성"]),
+        ("MA150 / MA200 이격", None),
+        ("150·200주선 간격", metrics["장기선 간격"]),
+        ("ATH 안전마진", metrics["ATH 안전마진"]),
+    ]
+    box_gap = 10.0
+    box_width = (right - left - box_gap * (len(metric_items) - 1)) / len(metric_items)
+    box_y, box_height = 590.0, 83.0
+    for index, (label, value) in enumerate(metric_items):
+        x = left + index * (box_width + box_gap)
+        lines.append(f'<rect x="{x:.1f}" y="{box_y}" width="{box_width:.1f}" height="{box_height}" rx="12" fill="#f4f7fb" stroke="#e0e7f0"/>')
+        lines.append(f'<text x="{x + box_width / 2:.1f}" y="{box_y + 27}" text-anchor="middle" class="metric">{label}</text>')
+        if value is None:
+            value_text = f"{fmt(float(metrics['MA150 이격']))} / {fmt(float(metrics['MA200 이격']))}"
+        else:
+            value_text = fmt(float(value))
+        lines.append(f'<text x="{x + box_width / 2:.1f}" y="{box_y + 57}" text-anchor="middle" class="value">{value_text}</text>')
+
+    lines.append('<text x="1140" y="698" text-anchor="end" class="axis">실제 종목 차트가 아니라 학습구간 고정 중심점의 역변환 프로토타입</text>')
+    lines.append("</svg>")
+    return "\n".join(lines)
+
+
+def _actual_chart_svg(
+    frame: pd.DataFrame,
+    pattern_name: str,
+    representative_event: str,
+) -> str:
+    """Render one familiar six-panel weekly chart without post-candle data."""
+    frame = frame.copy()
+    frame["relative_week"] = pd.to_numeric(frame["relative_week"], errors="raise").astype(int)
+    frame["week_date"] = pd.to_datetime(frame["week_date"], errors="raise")
+    frame = frame.sort_values("relative_week")
+    if len(frame) != 53 or frame["relative_week"].min() != -52 or frame["relative_week"].max() != 0:
+        raise ValueError(f"representative window must be T-52..T0: {representative_event}")
+
+    width, height = 1200, 1000
+    left, right = 70.0, 1080.0
+    top, gap = 80.0, 10.0
+    panel_heights = [310.0, 110.0, 90.0, 120.0, 90.0, 90.0]
+    panels: list[tuple[float, float]] = []
+    panel_top = top
+    for panel_height in panel_heights:
+        panels.append((panel_top, panel_height))
+        panel_top += panel_height + gap
+
+    def x_pos(relative_week: float) -> float:
+        return left + (relative_week + 52.0) / 52.0 * (right - left)
+
+    def y_pos(value: float, low: float, high: float, panel: tuple[float, float]) -> float:
+        panel_y, panel_h = panel
+        if high <= low:
+            high = low + 1.0
+        padding = panel_h * 0.08
+        return panel_y + padding + (high - value) / (high - low) * (panel_h - 2.0 * padding)
+
+    def finite(columns: list[str]) -> np.ndarray:
+        values: list[float] = []
+        for column in columns:
+            numeric = pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=float)
+            values.extend(numeric[np.isfinite(numeric)].tolist())
+        return np.asarray(values, dtype=float)
+
+    def value_range(columns: list[str], include_zero: bool = False) -> tuple[float, float]:
+        values = finite(columns)
+        if values.size == 0:
+            return 0.0, 1.0
+        low = float(np.nanmin(values))
+        high = float(np.nanmax(values))
+        if include_zero:
+            low, high = min(low, 0.0), max(high, 0.0)
+        span = high - low
+        pad = span * 0.05 if span else max(abs(high) * 0.05, 1.0)
+        return low - pad, high + pad
+
+    def path(column: str, low: float, high: float, panel: tuple[float, float]) -> str:
+        commands: list[str] = []
+        drawing = False
+        for _, row in frame.iterrows():
+            value = pd.to_numeric(pd.Series([row[column]]), errors="coerce").iloc[0]
+            if pd.isna(value):
+                drawing = False
+                continue
+            command = "L" if drawing else "M"
+            commands.append(
+                f"{command} {x_pos(float(row['relative_week'])):.2f} "
+                f"{y_pos(float(value), low, high, panel):.2f}"
+            )
+            drawing = True
+        return " ".join(commands)
+
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img">',
+        f"<title>{html.escape(pattern_name)} 실제 대표사례 {html.escape(representative_event)} 기준봉 이전 차트</title>",
+        f'<rect width="{width}" height="{height}" fill="#ffffff"/>',
+        "<style>text{font-family:system-ui,-apple-system,'Noto Sans KR',sans-serif;fill:#202735}.title{font-size:21px;font-weight:800}.sub{font-size:12px;fill:#667085}.label{font-size:13px;font-weight:750}.axis{font-size:10px;fill:#6b7280}.legend{font-size:11px;font-weight:750}</style>",
+        f'<text x="{left}" y="28" class="title">실제 대표사례 · {html.escape(representative_event)} · {html.escape(pattern_name)}</text>',
+        f'<text x="{left}" y="50" class="sub">Investing 근사 주봉 · 기준봉 이전 52주와 기준봉만 표시 · 기준봉 이후 성과는 숨김</text>',
+    ]
+
+    tick_weeks = (-52, -39, -26, -13, 0)
+    for panel_y, panel_h in panels:
+        lines.append(
+            f'<rect x="{left}" y="{panel_y}" width="{right - left}" height="{panel_h}" fill="#fcfdff" stroke="#d9e1ec"/>'
+        )
+        for week in tick_weeks:
+            x = x_pos(float(week))
+            color = "#1d5fd1" if week == 0 else "#e8edf4"
+            stroke_width = 2.2 if week == 0 else 1.0
+            lines.append(
+                f'<line x1="{x:.2f}" y1="{panel_y}" x2="{x:.2f}" y2="{panel_y + panel_h}" stroke="{color}" stroke-width="{stroke_width}"/>'
+            )
+
+    def axis(panel: tuple[float, float], low: float, high: float, title: str) -> None:
+        panel_y, panel_h = panel
+        lines.append(f'<text x="{left + 7}" y="{panel_y + 18}" class="label">{html.escape(title)}</text>')
+        lines.append(f'<text x="{right + 8}" y="{panel_y + 12}" class="axis">{high:,.2f}</text>')
+        lines.append(f'<text x="{right + 8}" y="{panel_y + panel_h - 4}" class="axis">{low:,.2f}</text>')
+
+    def reference(panel: tuple[float, float], value: float, low: float, high: float, color: str) -> None:
+        if low <= value <= high:
+            y = y_pos(value, low, high, panel)
+            lines.append(
+                f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="{color}" stroke-dasharray="5 5"/>'
+            )
+
+    price_panel = panels[0]
+    price_columns = ["low", "high", "ma_5", "ma_20", "ma_50", "ma_150", "ma_200"]
+    price_low, price_high = value_range(price_columns)
+    axis(price_panel, price_low, price_high, "주봉 가격 · MA 5 / 20 / 50 / 150 / 200")
+    candle_width = max(3.0, (right - left) / 53.0 * 0.55)
+    for _, row in frame.iterrows():
+        values = [pd.to_numeric(pd.Series([row[name]]), errors="coerce").iloc[0] for name in ("open", "high", "low", "close")]
+        if any(pd.isna(value) for value in values):
+            continue
+        open_, high_, low_, close = map(float, values)
+        x = x_pos(float(row["relative_week"]))
+        candle_color = "#ef3b3b" if close >= open_ else "#3156d9"
+        y_high = y_pos(high_, price_low, price_high, price_panel)
+        y_low = y_pos(low_, price_low, price_high, price_panel)
+        y_open = y_pos(open_, price_low, price_high, price_panel)
+        y_close = y_pos(close, price_low, price_high, price_panel)
+        lines.append(f'<line x1="{x:.2f}" y1="{y_high:.2f}" x2="{x:.2f}" y2="{y_low:.2f}" stroke="{candle_color}"/>')
+        lines.append(
+            f'<rect x="{x - candle_width / 2:.2f}" y="{min(y_open, y_close):.2f}" width="{candle_width:.2f}" '
+            f'height="{max(abs(y_close - y_open), 1.2):.2f}" fill="{candle_color if close >= open_ else "#ffffff"}" stroke="{candle_color}"/>'
+        )
+    ma_colors = {5: "#168b4b", 20: "#13b8c8", 50: "#3156d9", 150: "#8b3f2b", 200: "#e05252"}
+    for period, color in ma_colors.items():
+        ma_path = path(f"ma_{period}", price_low, price_high, price_panel)
+        if ma_path:
+            lines.append(f'<path d="{ma_path}" fill="none" stroke="{color}" stroke-width="{3 if period in (150, 200) else 2}"/>')
+    legend_x = 470.0
+    for label, color in [("5", ma_colors[5]), ("20", ma_colors[20]), ("50", ma_colors[50]), ("150", ma_colors[150]), ("200", ma_colors[200])]:
+        lines.append(f'<line x1="{legend_x}" y1="{price_panel[0] + 15}" x2="{legend_x + 19}" y2="{price_panel[0] + 15}" stroke="{color}" stroke-width="3"/>')
+        lines.append(f'<text x="{legend_x + 24}" y="{price_panel[0] + 19}" class="legend">{label}</text>')
+        legend_x += 82.0
+
+    volume_panel = panels[1]
+    volume_values = finite(["volume", "volume_ma_50"])
+    volume_low, volume_high = 0.0, float(np.nanmax(volume_values)) * 1.05
+    axis(volume_panel, volume_low, volume_high, "거래량 · 50주 평균")
+    volume_base = y_pos(0.0, volume_low, volume_high, volume_panel)
+    volume_width = max(3.0, (right - left) / 53.0 * 0.62)
+    for _, row in frame.iterrows():
+        volume = pd.to_numeric(pd.Series([row["volume"]]), errors="coerce").iloc[0]
+        if pd.isna(volume):
+            continue
+        x = x_pos(float(row["relative_week"]))
+        y = y_pos(float(volume), volume_low, volume_high, volume_panel)
+        up = float(row["close"]) >= float(row["open"])
+        lines.append(f'<rect x="{x - volume_width / 2:.2f}" y="{y:.2f}" width="{volume_width:.2f}" height="{max(volume_base - y, 0.7):.2f}" fill="{"#ef9a9a" if up else "#94a3e8"}" opacity="0.78"/>')
+    volume_path = path("volume_ma_50", volume_low, volume_high, volume_panel)
+    lines.append(f'<path d="{volume_path}" fill="none" stroke="#173ee6" stroke-width="2"/>')
+
+    momentum_panel = panels[2]
+    momentum_low, momentum_high = value_range(["momentum_14"], include_zero=True)
+    axis(momentum_panel, momentum_low, momentum_high, "Momentum 14")
+    reference(momentum_panel, 0.0, momentum_low, momentum_high, "#8a94a5")
+    momentum_base = y_pos(0.0, momentum_low, momentum_high, momentum_panel)
+    bar_width = max(3.0, (right - left) / 53.0 * 0.52)
+    for _, row in frame.iterrows():
+        value = pd.to_numeric(pd.Series([row["momentum_14"]]), errors="coerce").iloc[0]
+        if pd.isna(value):
+            continue
+        x = x_pos(float(row["relative_week"]))
+        y = y_pos(float(value), momentum_low, momentum_high, momentum_panel)
+        lines.append(f'<rect x="{x - bar_width / 2:.2f}" y="{min(y, momentum_base):.2f}" width="{bar_width:.2f}" height="{max(abs(momentum_base - y), 0.8):.2f}" fill="{"#ef4444" if float(value) >= 0 else "#8b929d"}"/>')
+
+    macd_panel = panels[3]
+    macd_low, macd_high = value_range(["macd", "signal", "histogram"], include_zero=True)
+    axis(macd_panel, macd_low, macd_high, "MACD 12·26 · Signal 9")
+    reference(macd_panel, 0.0, macd_low, macd_high, "#8a94a5")
+    macd_base = y_pos(0.0, macd_low, macd_high, macd_panel)
+    for _, row in frame.iterrows():
+        value = pd.to_numeric(pd.Series([row["histogram"]]), errors="coerce").iloc[0]
+        if pd.isna(value):
+            continue
+        x = x_pos(float(row["relative_week"]))
+        y = y_pos(float(value), macd_low, macd_high, macd_panel)
+        lines.append(f'<rect x="{x - bar_width / 2:.2f}" y="{min(y, macd_base):.2f}" width="{bar_width:.2f}" height="{max(abs(macd_base - y), 0.7):.2f}" fill="{"#f2a0a0" if float(value) >= 0 else "#c8ccd3"}" opacity="0.7"/>')
+    for column, color in [("macd", "#ef4444"), ("signal", "#3156d9")]:
+        lines.append(f'<path d="{path(column, macd_low, macd_high, macd_panel)}" fill="none" stroke="{color}" stroke-width="2.2"/>')
+
+    for panel, column, title in [(panels[4], "rsi_14", "RSI 14"), (panels[5], "mfi_14", "MFI 14")]:
+        axis(panel, 0.0, 100.0, title)
+        reference(panel, 30.0, 0.0, 100.0, "#3156d9")
+        reference(panel, 50.0, 0.0, 100.0, "#aab1bd")
+        reference(panel, 70.0, 0.0, 100.0, "#ef4444")
+        lines.append(f'<path d="{path(column, 0.0, 100.0, panel)}" fill="none" stroke="#e83e8c" stroke-width="2.2"/>')
+
+    marker_x = x_pos(0.0)
+    lines.append(f'<rect x="{marker_x - 102:.2f}" y="{top + 5}" width="98" height="23" rx="5" fill="#1d5fd1"/>')
+    lines.append(f'<text x="{marker_x - 53:.2f}" y="{top + 21}" text-anchor="middle" style="font-size:11px;fill:#fff;font-weight:800">MMRM 기준봉</text>')
+    bottom_y = panels[-1][0] + panels[-1][1]
+    dates = frame.set_index("relative_week")["week_date"]
+    for week in tick_weeks:
+        label = "T0 " + dates.loc[week].strftime("%Y-%m-%d") if week == 0 else dates.loc[week].strftime("%Y-%m")
+        lines.append(f'<text x="{x_pos(float(week)):.2f}" y="{bottom_y + 22}" text-anchor="middle" class="axis">{label}</text>')
+    lines.append(f'<text x="{right}" y="{height - 12}" text-anchor="end" class="sub">이 그림은 패턴을 익히기 위한 실제 대표사례이며, 해당 사건의 기준봉 이후 결과를 포함하지 않는다.</text>')
+    lines.append("</svg>")
+    return "\n".join(lines)
+
+
+def build_pattern_assets() -> None:
+    prototypes = _pattern_prototypes()
+    all_price_values = []
+    all_drawdown_values = []
+    for prototype in prototypes:
+        all_price_values.append(np.asarray(prototype["price"], dtype=float))
+        all_price_values.extend(
+            np.asarray(values, dtype=float)
+            for values in prototype["moving_averages"].values()
+        )
+        all_drawdown_values.append(np.asarray(prototype["drawdown"], dtype=float))
+    price_values = np.concatenate(all_price_values)
+    drawdown_values = np.concatenate(all_drawdown_values)
+    price_bounds = (
+        math.floor(float(np.nanmin(price_values)) / 10.0) * 10.0,
+        math.ceil(float(np.nanmax(price_values)) / 10.0) * 10.0,
+    )
+    drawdown_min = min(-10.0, math.floor(float(np.nanmin(drawdown_values)) / 10.0) * 10.0)
+    for prototype in prototypes:
+        chart_path = Path(prototype["chart_path"])
+        chart_path.parent.mkdir(parents=True, exist_ok=True)
+        chart_path.write_text(
+            _prototype_svg(prototype, price_bounds, drawdown_min),
+            encoding="utf-8",
+        )
+
+    representative_windows = pd.read_csv(DATA / "representative_chart_windows.csv", low_memory=False)
+    definition_rows = definitions()
+    for _, definition in definition_rows.iterrows():
+        event_id = str(definition["representative_event"]).replace(" ", "_", 1)
+        window = representative_windows[representative_windows["event_id"] == event_id].copy()
+        output_path = ROOT / str(definition["familiar_chart"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            _actual_chart_svg(
+                window,
+                str(definition["pattern_name"]),
+                str(definition["representative_event"]),
+            ),
+            encoding="utf-8",
+        )
+
+
 def build_readme(metrics: pd.DataFrame) -> str:
     inv = metrics[metrics["engine"] == "investing_proxy"]
     best = inv.sort_values("official_overall_rank").iloc[0]
@@ -456,15 +880,15 @@ def build_knowledge(metrics: pd.DataFrame, periods: pd.DataFrame, conditions: pd
 
 ## 5. 다섯 패턴과 판정 순서
 
-패턴은 보조지표 숫자가 소수점까지 같은 사건을 찾는 방식이 아니다. 기준봉 이전 52주의 가격경로, 이동평균 이격, MACD, Momentum·RSI·MFI, 거래활동, ATH·장기선 구조를 4주 간격의 완만한 형태로 압축해 **전체적인 방향·굴곡·지지구조가 비슷한 사건**을 묶는다. 연구 가중치는 가격경로 35%, 이동평균 20%, MACD 15%, 오실레이터 10%, 거래활동 5%, ATH·장기선 등 구조 15%였다. 따라서 신규 사건에서는 한 지표의 정확한 숫자보다 전체 흐름을 먼저 보고, `pattern_distance`로 중심 사례와의 거리를 함께 표시한다.
+패턴은 보조지표 숫자가 소수점까지 같은 사건을 찾는 방식이 아니다. 기준봉 이전 52주의 가격경로, 이동평균 이격, MACD, Momentum·RSI·MFI, 거래활동, ATH·장기선 구조를 4주 간격의 완만한 형태로 압축해 **전체적인 방향·굴곡·가격과 장기선의 지지·저항 구조가 비슷한 사건**을 묶는다. 연구 가중치는 가격경로 35%, 이동평균 20%, MACD 15%, 오실레이터 10%, 거래활동 5%, ATH·장기선 등 구조 15%였다. 따라서 신규 사건에서는 한 지표의 정확한 숫자보다 전체 흐름을 먼저 보고, `pattern_distance`로 중심 사례와의 거리를 함께 표시한다.
 
-### 장기선 밀집 할인 회복형
+### 장기선 밀집 저항·회복 시도형
 
 - 이전 1년에 의미 있는 조정이 있다.
-- 가격이 150·200주선 근처 또는 약간 아래이고 두 장기선 간격이 좁다.
+- 가격이 150·200주선 아래 또는 두 장기선 사이에 있는 경우가 많고 두 장기선 간격이 좁다.
 - 단기선과 MACD가 회복 방향으로 돌아선다.
 - 즉각성과 하락방어를 함께 중시할 때 우선 확인한다.
-- 장기선 지지를 음봉 주봉 종가로 이탈하면 가설을 낮춘다.
+- 가격 위의 밀집 장기선은 우선 저항이다. 주봉 종가로 회복하고 그 위에 안착한 뒤에만 지지 전환으로 해석한다.
 
 ### 급락 후 장기선 부근 초기 반등형
 
@@ -508,14 +932,14 @@ def build_knowledge(metrics: pd.DataFrame, periods: pd.DataFrame, conditions: pd
 
 ### 150주선과 200주선 정배열
 
-워크포워드 평가구간의 단일조건 기술통계에서 `150>200`은 {int(ma_bull['event_n'])}건, 8주 상승 {pct(ma_bull['rise_8w_probability'])}, 52주 후 +20% {pct(ma_bull['close_20_at_52w_probability'])}, 52주 MAE 중앙값 {num(ma_bull['mae_52w_median_pct'])}였다. `150<=200`은 {int(ma_other['event_n'])}건, 8주 상승 {pct(ma_other['rise_8w_probability'])}, 52주 후 +20% {pct(ma_other['close_20_at_52w_probability'])}, 52주 MAE 중앙값 {num(ma_other['mae_52w_median_pct'])}였다. 이 값은 다른 조건을 통제한 인과효과가 아니므로 `150>200` 하나만으로 매수하지 않고 패턴·MACD·ATH·지지구조와 결합한다. 전체 단일조건 표는 `data/condition_metrics.csv`에 있다.
+워크포워드 평가구간의 단일조건 기술통계에서 `150>200`은 {int(ma_bull['event_n'])}건, 8주 상승 {pct(ma_bull['rise_8w_probability'])}, 52주 후 +20% {pct(ma_bull['close_20_at_52w_probability'])}, 52주 MAE 중앙값 {num(ma_bull['mae_52w_median_pct'])}였다. `150<=200`은 {int(ma_other['event_n'])}건, 8주 상승 {pct(ma_other['rise_8w_probability'])}, 52주 후 +20% {pct(ma_other['close_20_at_52w_probability'])}, 52주 MAE 중앙값 {num(ma_other['mae_52w_median_pct'])}였다. 이 값은 다른 조건을 통제한 인과효과가 아니므로 `150>200` 하나만으로 매수하지 않고 패턴·MACD·ATH·가격과 장기선의 위아래 관계에 결합한다. 전체 단일조건 표는 `data/condition_metrics.csv`에 있다.
 
 ## 7. 신규 기준봉 분석 절차
 
 1. **계산 엔진 확인**: Investing 근사 또는 KIS 호환 중 어느 수치인지 먼저 적는다.
 2. **MMRM 충족 확인**: 하락영역 MACD 상승흐름에서 Momentum>0, RSI>50, MFI>50을 처음 동시에 충족한 주봉인지 확인한다.
 3. **기준봉 이전 52주만 보고 패턴 분류**: 이후 수익이나 결과 흐름으로 패턴을 고치지 않는다.
-4. **장기선 구조 기록**: 150>200 정배열 여부, 간격, 가격과의 이격, 지지 후보를 적는다.
+4. **장기선 구조 기록**: 150>200 정배열 여부, 간격, 가격과의 이격, 각 장기선이 지지 후보인지 저항 후보인지 적는다.
 5. **MACD 위치 기록**: 0선 바로 아래인지, 깊은 하락영역인지, 상승영역 진입 여지가 있는지 적는다.
 6. **저점 형태 기록**: V형, U형, 횡보지지, 첫 반등, 재시험 중 어느 쪽인지 적는다.
 7. **ATH 기록**: 기준봉의 ATH 안전마진, ATH 회복 목표의 현실성, 신고가 확장 가능성을 적는다.
@@ -532,7 +956,7 @@ MMRM 충족 여부와 최초 충족 주
 공식 표본 수와 확률(8주, 52주 +20%, 52주 내 +20%)
 중앙 수익률·중앙 MAE·+20% 도달기간
 ATH 안전마진과 회복/돌파 해석
-150·200주선 및 지지선 해석
+150·200주선의 지지·저항 방향 및 수평 지지선 해석
 비슷한 성공사례 2~3건 / 실패사례 2~3건
 상승 가설 / 지연 가설 / 실패 가설
 관찰할 무효화 조건
@@ -692,7 +1116,18 @@ def build_html(
             <p><strong>판정:</strong> {html.escape(advice['action'])}</p>
             <p class="risk"><strong>위험:</strong> {html.escape(advice['risk'])}</p>
           </div>
-          <img src="{definition['representative_chart']}" alt="{html.escape(definition['pattern_name'])} 대표 차트">
+          <div class="pattern-visuals">
+            <figure class="pattern-visual familiar-visual">
+              <h4>① 익숙한 실제 대표사례</h4>
+              <img src="{definition['familiar_chart']}" alt="{html.escape(definition['pattern_name'])} 실제 대표사례 기준봉 이전 주봉 차트">
+              <figcaption>{html.escape(str(definition['representative_event']))}의 기준봉 이전 52주다. 실제 가격 주봉, 거래량, Momentum, MACD, RSI, MFI를 표시하되 기준봉 이후 결과는 숨겼다.</figcaption>
+            </figure>
+            <figure class="pattern-visual prototype-visual">
+              <h4>② 패턴끼리 비교하는 표준 모형도</h4>
+              <img src="{definition['representative_chart']}" alt="{html.escape(definition['pattern_name'])} 고정 패턴 중심 프로토타입">
+              <figcaption>여러 사건을 합친 고정 모델 중심이다. 기준봉 종가를 100으로 맞추고 다섯 패턴에 같은 축을 적용해 장기선 위치와 낙폭을 비교한다.</figcaption>
+            </figure>
+          </div>
           <div class="metric-grid">
             <div><b>{int(row['evaluation_event_n'])}</b><span>워크포워드 사건</span></div>
             <div><b>{pct(row['rise_8w_probability'])}</b><span>8주 상승</span></div>
@@ -787,22 +1222,22 @@ header{{background:linear-gradient(135deg,#10294d,#1d5fd1);color:white;padding:5
 nav{{position:sticky;top:0;background:#ffffffee;backdrop-filter:blur(10px);border-bottom:1px solid var(--line);z-index:5;padding:10px 16px;overflow:auto;white-space:nowrap}} nav a{{color:var(--brand);text-decoration:none;margin-right:18px;font-weight:650}}
 main{{padding:28px 18px 80px}} section,.pattern-card{{background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:26px;margin:22px 0;box-shadow:0 8px 28px #2338580b}}
 .hero-result{{border-left:7px solid var(--good);font-size:1.08rem}} .hero-result strong{{color:var(--good)}}
-.pattern-card{{display:grid;grid-template-columns:1.25fr .9fr;gap:22px}} .pattern-card img{{width:100%;border:1px solid var(--line);border-radius:12px;background:#fff}} .pattern-copy ul{{padding-left:20px}} .badge{{float:right;background:#e9f1ff;color:var(--brand);border-radius:999px;padding:5px 11px;font-weight:800}} .lead{{font-size:1.1rem;color:var(--brand);font-weight:700}} .risk{{color:#7d3e00}}
+.pattern-card{{display:block}} .pattern-copy{{margin-bottom:22px}} .pattern-visuals{{display:grid;grid-template-columns:1fr;gap:24px}} .pattern-visual{{margin:0}} .pattern-visual h4{{margin:0 0 8px;color:#233b60}} .pattern-card img{{display:block;width:100%;border:1px solid var(--line);border-radius:12px;background:#fff}} .familiar-visual img{{max-height:920px;object-fit:contain}} .prototype-visual img{{max-height:710px;object-fit:contain}} .pattern-visual figcaption{{margin-top:8px;color:var(--muted);font-size:.86rem}} .pattern-copy ul{{padding-left:20px}} .badge{{float:right;background:#e9f1ff;color:var(--brand);border-radius:999px;padding:5px 11px;font-weight:800}} .lead{{font-size:1.1rem;color:var(--brand);font-weight:700}} .risk{{color:#7d3e00}}
 .metric-grid{{grid-column:1/-1;display:grid;grid-template-columns:repeat(6,1fr);gap:10px}} .metric-grid div{{background:#f5f8fd;border-radius:12px;padding:12px;text-align:center}} .metric-grid b{{display:block;font-size:1.25rem;color:var(--brand)}} .metric-grid span{{font-size:.82rem;color:var(--muted)}} .sensitivity{{grid-column:1/-1;color:var(--muted);margin:0}}
 .table-wrap{{overflow:auto;max-height:680px;border:1px solid var(--line);border-radius:12px}} table{{border-collapse:collapse;width:100%;font-size:.9rem;background:#fff}} th,td{{padding:9px 11px;border-bottom:1px solid #e8edf4;text-align:right;white-space:nowrap}} th{{position:sticky;top:0;background:#edf3fb;color:#233b60;z-index:1}} th:nth-child(2),td:nth-child(2),th:nth-child(3),td:nth-child(3){{text-align:left}} a{{color:var(--brand)}} .method li{{margin:7px 0}} code{{background:#edf2f8;padding:2px 5px;border-radius:5px}} .small{{color:var(--muted);font-size:.92rem}}
-@media(max-width:850px){{.pattern-card{{grid-template-columns:1fr}}.metric-grid{{grid-template-columns:repeat(2,1fr)}}section,.pattern-card{{padding:18px}}}}
+@media(max-width:850px){{.metric-grid{{grid-template-columns:repeat(2,1fr)}}section,.pattern-card{{padding:18px}}.pattern-visuals{{gap:18px}}}}
 </style></head><body>
 <header><div><p>MMRM WEEKLY BUY-POINT RESEARCH</p><h1>패턴 연구 최종 보고서</h1><p class="subtitle">고정된 다섯 가지 차트 패턴과 미래정보 없는 확장형 워크포워드 확률을 사용해 신규 기준봉의 즉각성, 1년 +20% 목표, 하락위험을 함께 판단한다.</p><p class="small">생성 {generated} · 공식 엔진 investing_proxy · 평가 시작 2015-10-12</p></div></header>
 <nav><a href="#conclusion">결론</a><a href="#decision">판정</a><a href="#ranking">순위</a><a href="#method">검증법</a><a href="#stability">시기별</a><a href="#conditions">단일조건</a><a href="#flows">이후 흐름</a><a href="#patterns">패턴</a><a href="#catalogs">전체 사건</a><a href="#limits">한계</a></nav>
 <main>
-<section id="conclusion" class="hero-result"><h2>지금 무엇을 우선 볼 것인가</h2><p>공식 종합 1위는 <strong>{html.escape(best['pattern_name'])}</strong>이다. 이 순위는 52주 후 +20%만 보지 않고 즉각성 및 최대하락폭까지 반영한다. 52주 +20% 단일목표 순위는 별도 열로 확인해야 한다.</p><p>실전에서는 패턴명만으로 매수하지 않는다. 장기선 지지 유지, MACD 위치, V/U 저점 재시험, ATH 이격, TFMR 리버스 경고를 함께 기록한다.</p></section>
+<section id="conclusion" class="hero-result"><h2>지금 무엇을 우선 볼 것인가</h2><p>공식 종합 1위는 <strong>{html.escape(best['pattern_name'])}</strong>이다. 이 순위는 52주 후 +20%만 보지 않고 즉각성 및 최대하락폭까지 반영한다. 52주 +20% 단일목표 순위는 별도 열로 확인해야 한다.</p><p>실전에서는 패턴명만으로 매수하지 않는다. 가격과 장기선의 위아래 관계에 따른 지지·저항 방향, MACD 위치, V/U 저점 재시험, ATH 이격, TFMR 리버스 경고를 함께 기록한다.</p></section>
 <section id="decision"><h2>신규 기준봉 판정 원칙</h2><p>사용자 기본 목표는 기준봉 종가 매수 후 52주 뒤 +20%다. 세션마다 결론이 달라지지 않도록 공식 MMRM 신호, 표본 30건 이상, 52주 +20% 역사확률 40% 이상, 패턴 거리 95백분위 이내, 심각한 데이터 품질 경고 없음의 다섯 조건을 기본 운영선으로 사용한다.</p><p>이 40%는 연구가 증명한 자연법칙이 아니라 사용자용 운영정책이다. 답변은 기준봉 당시 정보만으로 <strong>매수</strong> 또는 <strong>매수하지 않음</strong>을 먼저 말하고, 투자 논리가 성립하는 기대와 조심할 점을 함께 쓴다. 상세 규칙은 <code>MMRM_KNOWLEDGE_BASE.md</code>를 따른다.</p></section>
 <section id="ranking"><h2>공식 우선순위</h2><p>가중치: 52주 후 +20% 40% · 52주 내 +20% 접촉 10% · 8주 상승 20% · 52주 MAE 방어 30%.</p><div class="table-wrap"><table><thead><tr><th>종합</th><th>패턴</th><th>n</th><th>8주 상승</th><th>52주 후 +20%</th><th>52주 내 +20%</th><th>52주 MAE</th><th>1년 목표순위</th></tr></thead><tbody>{''.join(rank_rows)}</tbody></table></div><p class="small">표본 30건 미만인 대폭락형은 결과가 좋아 보여도 공식순위에서 제외한다.</p></section>
 <section id="method" class="method"><h2>검증법</h2><ol><li>2015-10-05까지 기준봉 이전 차트만으로 다섯 패턴을 정했다.</li><li>2015-10-12 이후에는 결과를 보지 않고 고정 패턴을 적용했다.</li><li>각 기준봉 시점의 확률은 그때 이미 성숙한 과거 결과만 사용한다. 52주 지표는 52주가 지나야 편입된다.</li><li>프로그램과 맞춘 Investing 근사판을 공식 기준으로, KIS 호환판을 민감도 비교로 사용한다.</li></ol><p>이는 같은 전체 자료를 학습과 검증에 중복 사용하는 방식이 아니다. 초기 구간은 분류체계 학습, 이후 구간은 시간순 평가로 역할이 분리된다.</p></section>
 <section id="stability"><h2>시장 시기별 안정성</h2><p>한 번의 평균만으로 판단하지 않기 위해 워크포워드 평가구간을 세 시기로 나눴다. 최근 구간의 52주 표본은 아직 성숙 중이므로 사건 수와 함께 해석한다.</p><div class="table-wrap"><table><thead><tr><th>시기</th><th>패턴</th><th>사건</th><th>8주 상승</th><th>52주 후 +20%</th><th>52주 내 +20%</th><th>52주 MAE</th></tr></thead><tbody>{''.join(period_rows)}</tbody></table></div></section>
 <section id="conditions"><h2>장기선·MACD·ATH 단일조건</h2><p>한 조건만 떼어 본 기술통계다. 다른 조건을 통제한 인과효과가 아니므로 패턴 판단을 대체하지 않는다.</p><div class="table-wrap"><table><thead><tr><th>조건</th><th>구간</th><th>사건</th><th>8주 상승</th><th>52주 후 +20%</th><th>52주 내 +20%</th><th>52주 MAE</th></tr></thead><tbody>{''.join(condition_rows)}</tbody></table></div></section>
 <section id="flows"><h2>기준봉 이후 실제 흐름 연구</h2><p>이 표는 기준봉 뒤 결과를 설명하는 사후 분류다. 신규 기준봉에 이미 발생한 사실처럼 붙이거나 매수판정에 사용하지 않는다.</p><h3>이후 흐름 유형</h3><div class="table-wrap"><table><thead><tr><th>큰 흐름</th><th>세부 흐름</th><th>사건</th><th>8주 중앙</th><th>26주 중앙</th><th>52주 중앙</th><th>52주 +20%</th><th>52주 MAE</th></tr></thead><tbody>{''.join(flow_rows)}</tbody></table></div><h3>사전 패턴별 이후 흐름 빈도</h3><div class="table-wrap"><table><thead><tr><th>사전 패턴</th><th>이후 큰 흐름</th><th>사건</th><th>패턴 내 빈도</th></tr></thead><tbody>{''.join(family_rows)}</tbody></table></div></section>
-<div id="patterns"><h2>다섯 패턴 상세</h2>{''.join(cards)}</div>
+<div id="patterns"><h2>다섯 패턴 상세</h2><section><p><strong>이미지 읽는 법:</strong> 패턴마다 그림이 두 개다. ①은 사용자가 보는 증권사 화면과 비슷한 실제 대표사례로, 기준봉 이전 52주의 주봉·거래량·Momentum·MACD·RSI·MFI를 읽는다. ②는 기준봉 종가를 100으로 통일한 표준 모형도로, 다섯 패턴의 장기선 위치·낙폭·변동성 차이를 같은 축에서 비교한다. 두 그림 모두 기준봉 이후 결과를 넣지 않았다.</p><p><strong>장기선 방향:</strong> 가격 위의 150·200주선은 저항 후보이고, 가격 아래의 장기선은 지지 후보다. 위쪽 장기선을 주봉 종가로 회복하고 그 위에서 버틴 뒤에야 지지 전환으로 해석한다.</p></section>{''.join(cards)}</div>
 <div id="catalogs"><h2>패턴별 전체 사건</h2><p>아래 목록은 원형 MMRM 근사판 2,813건 전체다. 성공사례만 보지 말고 같은 패턴의 실패·지연 사례도 함께 비교해야 한다.</p>{''.join(catalogs)}</div>
 <section id="limits"><h2>한계와 사용 원칙</h2><ul><li>현재 Top100 생존 종목을 과거로 거슬러 분석한 생존편향이 있다.</li><li>같은 종목의 반복 사건은 서로 독립적이지 않다.</li><li>두 계산 엔진 모두 공급자 공식 전체 원천의 완전 복제본은 아니다.</li><li>확률은 과거 집단빈도이며 한 사건의 수익을 보장하지 않는다.</li><li>TFMR 리버스와 사용자가 그은 지지선 이탈은 아직 공식 확률 입력이 아니라 별도 경고다.</li></ul></section>
 </main></body></html>"""
@@ -810,6 +1245,7 @@ main{{padding:28px 18px 80px}} section,.pattern-card{{background:var(--paper);bo
 
 def main() -> None:
     DATA.mkdir(parents=True, exist_ok=True)
+    build_pattern_assets()
     events_by_engine = {engine: load_events(engine) for engine in ENGINES}
     predictions = pd.concat(
         [walk_forward_predictions(frame) for frame in events_by_engine.values()], ignore_index=True

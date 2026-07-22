@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
+REVISED_LONG_MA_PATTERN_NAME = "장기선 밀집 저항·회복 시도형"
 REQUIRED = [
     "README.md",
     "MMRM_KNOWLEDGE_BASE.md",
@@ -18,6 +20,7 @@ REQUIRED = [
     "data/events_investing_proxy.csv",
     "data/events_kis_compatible.csv",
     "data/pattern_definitions.csv",
+    "data/representative_chart_windows.csv",
     "data/pattern_metrics.csv",
     "data/provider_comparison.csv",
     "data/walk_forward_predictions.csv",
@@ -58,7 +61,26 @@ def main() -> None:
     require(len(investing) == manifest["engines"]["investing_proxy"]["event_count"], "investing count mismatch")
     require(len(kis) == manifest["engines"]["kis_compatible"]["event_count"], "KIS count mismatch")
     require(manifest["decision_policy"]["default_probability_threshold"] == 0.4, "decision policy mismatch")
+    require(
+        manifest["visualization"]["type"] == "dual_familiar_actual_and_fixed_cluster_center",
+        "visualization type mismatch",
+    )
+    require(manifest["visualization"]["future_data"] == "excluded", "visualization future-data rule mismatch")
     require(definitions["pattern_id"].nunique() == 5, "pattern definition count must be five")
+    require({"representative_event", "familiar_chart", "representative_chart"}.issubset(definitions.columns), "pattern chart columns missing")
+    revised_definition = definitions[
+        definitions["pattern_id"] == "long_ma_cluster_discount_recovery"
+    ]
+    require(len(revised_definition) == 1, "revised long-MA pattern definition missing")
+    require(
+        revised_definition.iloc[0]["pattern_name"] == REVISED_LONG_MA_PATTERN_NAME,
+        "revised long-MA pattern name mismatch",
+    )
+    require(
+        "상단 저항" in revised_definition.iloc[0]["meaning"]
+        and "지지 전환" in revised_definition.iloc[0]["classification_checklist"],
+        "revised long-MA resistance interpretation missing",
+    )
     require(set(metrics["engine"]) == {"investing_proxy", "kis_compatible"}, "engine set mismatch")
     require(len(metrics) == 10, "expected five metric rows per engine")
     require(set(conditions["condition"]) == {"ma_order", "ma_tightness", "macd_zero", "ath_margin"}, "condition set mismatch")
@@ -86,6 +108,25 @@ def main() -> None:
     }
     require(required_event_columns.issubset(investing.columns), "investing event detail columns missing")
     require(required_event_columns.issubset(kis.columns), "KIS event detail columns missing")
+    for frame_name, frame in (("investing", investing), ("KIS", kis), ("metrics", metrics), ("predictions", predictions)):
+        revised_names = frame.loc[
+            frame["pattern_id"] == "long_ma_cluster_discount_recovery", "pattern_name"
+        ].dropna().unique()
+        require(
+            set(revised_names) == {REVISED_LONG_MA_PATTERN_NAME},
+            f"stale long-MA pattern name: {frame_name}",
+        )
+
+    representative_windows = pd.read_csv(DATA / "representative_chart_windows.csv", low_memory=False)
+    require(len(representative_windows) == 265, "representative chart row count mismatch")
+    require(representative_windows["event_id"].nunique() == 5, "representative chart event count mismatch")
+    relative_week = pd.to_numeric(representative_windows["relative_week"], errors="raise")
+    require(relative_week.min() == -52 and relative_week.max() == 0, "representative chart window mismatch")
+    require((relative_week > 0).sum() == 0, "future row leaked into representative chart data")
+    require(
+        (representative_windows.groupby("event_id").size() == 53).all(),
+        "representative chart must have 53 rows per event",
+    )
 
     require(model["schema_version"] == "1.0", "pattern model schema mismatch")
     require(set(model["engines"]) == {"investing_proxy", "kis_compatible"}, "model engine set mismatch")
@@ -97,6 +138,11 @@ def main() -> None:
         for cluster in spec["clusters"].values():
             require(len(cluster["center"]) == 220, f"model center width mismatch: {engine}")
             require(set(cluster["training_distance_quantiles"]) == {"p25", "p50", "p75", "p90", "p95", "max"}, f"distance quantiles missing: {engine}")
+            if cluster["pattern_id"] == "long_ma_cluster_discount_recovery":
+                require(
+                    cluster["pattern_name"] == REVISED_LONG_MA_PATTERN_NAME,
+                    f"stale long-MA model name: {engine}",
+                )
 
     msft = investing[investing["event_id"] == "MSFT_2026-05-25"]
     require(len(msft) == 1, "MSFT regression event missing")
@@ -111,11 +157,31 @@ def main() -> None:
     report = (ROOT / "MMRM_PATTERN_REPORT.html").read_text(encoding="utf-8")
     require("<meta charset=\"utf-8\">" in report, "HTML charset missing")
     require("워크포워드" in report and "2015-10-12" in report, "HTML method statement missing")
+    require(REVISED_LONG_MA_PATTERN_NAME in report, "revised long-MA report name missing")
+    require("장기선이 받쳐주는 할인 회복" not in report, "stale support interpretation in report")
+    require("가격 위의 150·200주선은 저항 후보" in report, "report MA direction rule missing")
     require('id="conditions"' in report and 'id="stability"' in report and 'id="flows"' in report, "HTML evidence sections missing")
     for pattern_id in definitions["pattern_id"]:
         require(f'id="pattern-{pattern_id}"' in report, f"pattern section missing: {pattern_id}")
-    for source in re.findall(r'<img src="([^"]+)"', report):
-        require((ROOT / source).is_file(), f"HTML image missing: {source}")
+    image_sources = re.findall(r'<img src="([^"]+)"', report)
+    require(len(image_sources) == 10, "report must contain two images for each pattern")
+    for source in image_sources:
+        asset = ROOT / source
+        require(asset.is_file(), f"HTML image missing: {source}")
+        svg = asset.read_text(encoding="utf-8")
+        ET.fromstring(svg)
+        if Path(source).name.startswith("actual_"):
+            require("실제 대표사례" in svg, f"actual representative label missing: {source}")
+            require("기준봉 이후 성과는 숨김" in svg, f"actual future exclusion label missing: {source}")
+            require('viewBox="0 0 1200 1000"' in svg, f"actual chart viewport mismatch: {source}")
+            for label in ("주봉 가격", "거래량", "Momentum 14", "MACD 12·26", "RSI 14", "MFI 14"):
+                require(label in svg, f"actual chart panel missing ({label}): {source}")
+        else:
+            require("고정 패턴 중심 프로토타입" in svg, f"pattern prototype label missing: {source}")
+            require("T-52~T0" in svg, f"pre-candle window label missing: {source}")
+            require('viewBox="0 0 1200 710"' in svg, f"pattern prototype viewport mismatch: {source}")
+        require("T+52" not in svg, f"future window leaked into chart: {source}")
+        require(not re.search(r"(?<![A-Za-z])(nan|inf)(?![A-Za-z])", svg, re.I), f"non-finite SVG value: {source}")
 
     knowledge = (ROOT / "MMRM_KNOWLEDGE_BASE.md").read_text(encoding="utf-8")
     for phrase in (
@@ -125,6 +191,9 @@ def main() -> None:
         "매수하지 않음",
         "pattern_model.json",
         "전체적인 방향",
+        "보고서 대표 이미지 읽는 법",
+        "실제 대표사례 차트",
+        "이동평균선의 지지·저항 방향 규칙",
     ):
         require(phrase in knowledge, f"knowledge section missing: {phrase}")
 
