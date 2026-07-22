@@ -2,7 +2,7 @@
   "package_name": "MMRM_PATTERN_RESEARCH_FINAL",
   "package_schema_version": "2.0",
   "authority": "single_canonical_folder",
-  "generated_at": "2026-07-21T19:27:53+09:00",
+  "generated_at": "2026-07-23T02:30:00+09:00",
   "default_engine": "investing_proxy",
   "sensitivity_engine": "kis_compatible",
   "taxonomy_training_end": "2015-10-05",
@@ -71,6 +71,7 @@
     "outcome_flow_metrics": "data/outcome_flow_metrics.csv",
     "pattern_to_flow_metrics": "data/pattern_to_flow_metrics.csv",
     "definitions": "data/pattern_definitions.csv",
+    "representative_chart_windows": "data/representative_chart_windows.csv",
     "investing_events": "data/events_investing_proxy.csv",
     "kis_events": "data/events_kis_compatible.csv",
     "provider_comparison": "data/provider_comparison.csv",
@@ -88,6 +89,24 @@
     "prior ATH price date margin and required return",
     "post-candle outcomes kept separate for research audit"
   ],
+  "visualization": {
+    "type": "dual_familiar_actual_and_fixed_cluster_center",
+    "engine": "investing_proxy",
+    "window": "relative weeks -52 through 0 only",
+    "familiar_actual": {
+      "count": 5,
+      "price_scale": "actual event prices",
+      "panels": "weekly candle and MA5 MA20 MA50 MA150 MA200; volume; Momentum; MACD Signal; RSI; MFI",
+      "source": "data/representative_chart_windows.csv"
+    },
+    "fixed_prototype": {
+      "count": 5,
+      "price_normalization": "event close at week 0 equals 100",
+      "axis_policy": "shared price and drawdown axes across all five patterns"
+    },
+    "future_data": "excluded",
+    "generator": "tools/rebuild_final_package.py"
+  },
   "known_limitations": [
     "Current Top100 survivorship bias",
     "Repeated events from the same ticker are not fully independent",

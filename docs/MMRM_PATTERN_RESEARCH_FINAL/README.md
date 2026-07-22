@@ -183,13 +183,15 @@ MMRM_PATTERN_RESEARCH_FINAL/
 ├─ MMRM_PATTERN_REPORT.html
 ├─ NEXT_SESSION_PROMPT.txt
 ├─ RESEARCH_MANIFEST.json
-├─ assets/                  패턴 대표 차트 5개
-├─ data/                    사건·확률·조건·이후 흐름 근거
+├─ assets/                  실제 대표사례 차트 5개 + 고정 패턴 중심 모형도 5개
+├─ data/                    사건·확률·조건·대표차트 원자료·이후 흐름 근거
 ├─ model/pattern_model.json 신규 사건 분류 모델
 └─ tools/                   분류·보고서 재생성·무결성 검사
 ```
 
 세션 대화, 실행 로그, 종목별 임시 메모, 중복 보고서는 포함하지 않는다.
+
+보고서의 각 패턴에는 두 종류의 그림이 함께 있다. 첫 그림은 실제 대표 사건의 기준봉 이전 52주 주봉·거래량·Momentum·MACD·RSI·MFI이며, 두 번째 그림은 패턴끼리 같은 축에서 비교하는 고정 모델 중심 모형도다. 두 그림 모두 기준봉 이후 결과를 제외한다. 실제 대표차트의 재생성 원자료는 `data/representative_chart_windows.csv`에 다섯 사건, 사건당 53주씩 보관한다.
 
 ## 10. 공식 기준과 매수 운영정책
 

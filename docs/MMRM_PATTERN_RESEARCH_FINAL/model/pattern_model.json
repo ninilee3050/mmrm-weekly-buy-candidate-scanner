@@ -1600,7 +1600,7 @@
         },
         "CS03": {
           "pattern_id": "long_ma_cluster_discount_recovery",
-          "pattern_name": "장기선 밀집 할인 회복형",
+          "pattern_name": "장기선 밀집 저항·회복 시도형",
           "center": [
             0.05785677109740125,
             0.0317176704708478,
@@ -3429,7 +3429,7 @@
       "clusters": {
         "CS01": {
           "pattern_id": "long_ma_cluster_discount_recovery",
-          "pattern_name": "장기선 밀집 할인 회복형",
+          "pattern_name": "장기선 밀집 저항·회복 시도형",
           "center": [
             0.1071130385325571,
             0.08481056893520013,
